@@ -1,2 +1,4 @@
 # Statistical-Learning-Final-Project
-Analyzing the Relationship Between College Stats, Draft Performance, and Career Longevity
+Every year men's college basketball players across the country start the season with one dream-like goal in mind; play well enough to get drafted by an NBA team. Each player has to meet certain standards to be considered elite enough to warrant an NBA roster spot and faces near insurmountable odds to do so. In our report, we first investigate the relationship between a player's draft position and their performance metrics in his final year of collegiate basketball.
+
+Assuming a player does indeed get drafted, he now faces even tougher odds to remain within the NBA for more than four years. It is notoriously difficult to make it past your 'rookie contract' in the NBA as there is a never-ending influx of incredibly talented players into the league. In the second half of our report, we seek to investigate if a relationship exists between a player's stats in his final year of collegiate basketball and whether they receive a second contract in the NBA. 
