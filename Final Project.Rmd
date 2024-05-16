@@ -1,0 +1,480 @@
+---
+title: "Analyzing the Relationship Between College Stats, Draft Performance, and Career Longevity"
+author: Ethan Senatore
+date: \today
+output: 
+  pdf_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 3
+geometry: margin=0.85in
+fontsize: 12pt
+header-includes:
+- \usepackage{setspace}\onehalfspacing
+---
+
+\listoffigures
+\listoftables
+
+\newpage
+
+```{r,include = FALSE, message = FALSE, warning = FALSE}
+# set your global options here and load your packages
+knitr::opts_chunk$set(fig.width = 10, fig.height = 5, echo = TRUE, eval = TRUE)
+library(knitr)
+library(tidyverse)
+library(glmnet)
+library(tree)
+library(randomForest)
+```
+
+```{r, include = FALSE}
+playerStats = read.csv("E:/mat374/project/data/CollegeBasketballPlayers2009-2021.csv", header = TRUE)
+drafted = playerStats[!is.na(playerStats$pick),]
+drafted$player_name = tolower(drafted$player_name)
+drafted$unique_id = paste(drafted$player_name, drafted$team, sep="_")
+
+drafted = drafted[order(drafted$player_name, drafted$year),]
+newDrafted = data.frame()
+for(i in 1:nrow(drafted)){
+  if(i == nrow(drafted)){
+    break
+  }
+  if(drafted$unique_id[i] != drafted$unique_id[i+1]){
+    newDrafted = rbind(newDrafted, drafted[i,])
+  }
+}
+drafted = newDrafted
+draftData = drafted[,c(3,26, 25, 4,8,22:24,31,36, 46:47, 58,59, 61:64)] #old
+#draftData = drafted[,c(3,26,25, 22,46, 58,59, 61:64)] #new
+
+
+names(draftData)
+confCounts <- draftData %>%
+  group_by(conf) %>%
+  summarise(n = n())
+atLeast20 <- subset(confCounts, n > 20, select = c("conf"))
+
+draftData = semi_join(draftData, atLeast20, by ="conf")
+```
+
+
+# Introduction
+
+Every year men's college basketball players across the country start the season with one dream-like goal in mind; play well enough to get drafted by an NBA team. Each player has to meet certain standards to be considered elite enough to warrant an NBA roster spot and faces near insurmountable odds to do so. In our report, we first investigate the relationship between a player's draft position and their performance metrics in his final year of collegiate basketball.
+
+Assuming a player does indeed get drafted, he now faces even tougher odds to remain within the NBA for more than four years. It is notoriously difficult to make it past your 'rookie contract' in the NBA as there is a never-ending influx of incredibly talented players into the league. In the second half of our report, we seek to investigate if a relationship exists between a player's stats in his final year of collegiate basketball and whether they receive a second contract in the NBA. 
+
+## Research questions
+
+- Regression
+
+How do performance metrics from a player's final year in collegiate basketball influence their draft position?
+
+- Classification
+
+Do performance metrics from a player's final year in collegiate basketball predict their potential to "bust"?
+
+- Important Variables
+
+In our report we uncover different variables that play a larger role in predicting draft performance and career longevity. $Pts$ (Points per game), $Ast$ (Assists per game), $Conf$ (Conference), and $Yr$ (Academic year) are some of the variables that we highlighted as potential major players in achieving accurate predictions. However, as we will note in our report, variables that may appear to be important at face-value truly do not play as much of a role as we had anticipated.
+
+## Data set desription
+
+We sourced our data from Kaggle and found two sources that we thought were easily interpretable and detailed enough for our analysis. We first found a data-set containing contract information of NBA players from 1990 - 2017. There was little to no information regarding how this data was collected, but we can assume the author used publicly available information regarding NBA player's salaries. While we don't use most of the variables, this data-set gave us the necessary information in cataloging all the players that played in the NBA for more than 4 years. 
+
+This data-set can be found using this link:
+
+https://www.kaggle.com/datasets/whitefero/nba-player-salary-19902017
+
+Our second data-set is a collection of individual basketball statistics of all collegiate players from 2009 - 2021. The author, Bart Torvik, chose to compile this data-set as a project that combined two of his passions - data science and basketball. This is an incredibly complex data-set with season average statistics on ~25,000 players. We focused on just 670 as they are the only player's that were drafted during this period. All of the relevant performance metrics along with the pick in which they were chosen are held in this data-set and proved to the backbone of our statistical analysis.
+
+This data-set can be found using this link:
+
+https://www.kaggle.com/datasets/adityak2003/college-basketball-players-20092021?select=CollegeBasketballPlayers2009-2021.csv
+
+# Statistical Methods
+
+## Regression
+
+Before performing any analysis, we cleaned up the data to remove any variables that were either correlated with other variables or contained a substantial amount $NA$ values within their column. 
+
+Collinearity, or redudancy at the very least, between variables was expected as this data-set contained complex basketball statistics that were based off formulas that incorporated other variables included in the data set. For example, $usg$ (Usage Percentage), is a stat that measures the percentage of a team's possessions a player uses while on the court. It is calculated using this equation:
+
+\[usg = 100* (\frac{(FGA + 0.44FTA +TO)* (TMP/5)}{(MP * (TFGA + 0.44TFTA + TTO))}) \]
+
+Variables such as $FGA$, $FTA$, and $TO$ are all variables that appear in our data-set resulting in collinearity with $usg$. This was just one of the many examples collinearity or redundancy resulting in us omitting a variable from our analysis. In the end, we elected to include the variables in Table \ref{tbl:Variables Used in Analysis} in our regression analysis as we believed they would be the most relevant predictors for draft performance: 
+
+```{r Variables Used in Analysis, echo=FALSE, tbl.cap="\\label{tbl:Variables Used in Analysis} Variables Used in Analysis"}
+
+variables <- data.frame(
+  Variable = c("conf", "yr", "ftr", "GP", "eFG", "TP_per", "blk_per", "stl_per", "pfr", "asttov", "pick", "drtg", "oreb", "dreb", "ast", "stl", "blk", "pts"),
+  Description = c("Conference", "Academic Year", "Free-Throw Rating", "Games Played", 
+                  "Effective Field Goal Percentage", "Three-Point Percentage", "Block Percentage", 
+                  "Steal Percentage", "Personal Foul Rating", "Assist-Turnover Ratio", "Pick Drafted", 
+                  "Defensive Rating", "Offensive Rebounds", "Defensive Rebounds", "Assists per Game", 
+                  "Steals per Game", "Blocks per Game", "Points per Game")
+)
+
+kable(variables, format = "markdown",
+      caption = "\\label{tbl:Variables Used in Analysis} Variables Used in Analysis")
+
+```
+
+Our final adjustment to our data-set was to exclude any conferences that had less than 20 players drafted in them. Our reasoning behind this decision lies in the fact that the few who make it out of the smaller name conferences are outliers compared to their peers. Take Damian Lillard for example, he is now a star player in the NBA yet he attended Weber St. University that plays out of Big Sky Conference. His presence in our data-set would have skewed our analysis resulting in a less accurate model.
+
+As we previously noted, we suspected that the conference in which a player competes in has a major impact on their draft potential. The logic is that the stronger the competition a player plays against, the more it would translate into the professional game. See Figure \ref{fig:ConfHist} for a clearer view into our data-set and how each conference stacks up against each other. 
+
+```{r ConfHist, fig.cap="\\label{fig:ConfHist} Number of Players Drafted per Conference", fig.height=5, fig.width=8, echo=FALSE}
+playersPerConference <- draftData %>%
+  group_by(conf) %>%
+  summarise(NumberOfPlayers = n())
+
+barplot(playersPerConference$NumberOfPlayers,
+        names.arg = playersPerConference$conf,
+        las = 1, # Orientation of axis labels: 2 for perpendicular to the axis
+        cex.names = 0.7, # Adjust text size as needed
+        xlab = "Conference",
+        ylab = "Number of Players Drafted",
+        col = "dodgerblue",
+        ylim  = c(0,150)
+        )
+```
+
+We gathered that if a player competes in the ACC, SEC, Pac-12, Big 10, Big 12, and Big East they face better odds to get drafted. Moreover, below in Figure \ref{fig:ConfHist2} we highlight the number of lottery draft picks (picked 1-14 in the draft) for each conference. The figure suggests that not only does a player have a better chance of being drafted if they compete in the aforementioned conferences, but they are also poised to get drafted ahead of their peers in other conferences.
+
+```{r ConfHist2, fig.cap="\\label{fig:ConfHist2} Number of Lottery Draft Picks per Conference", fig.height=5, fig.width=8, echo=FALSE}
+
+playersPerConferenceTop10 <- draftData %>%
+  filter(pick <= 14) %>%           
+  group_by(conf) %>%
+  summarise(NumberOfTop10Picks = n(), .groups = 'drop')  
+
+barplot(playersPerConferenceTop10$NumberOfTop10Picks,
+        names.arg = playersPerConferenceTop10$conf,
+        las = 1, # Orientation of axis labels: 2 for perpendicular to the axis
+        cex.names = 0.7, # Adjust text size as needed
+        xlab = "Conference",
+        ylab = "Number of Top 10 Picks",
+        col = "dodgerblue",
+        ylim = c(0, max(playersPerConferenceTop10$NumberOfTop10Picks) + 5)
+        )
+
+```
+
+A relationship between the conference in which a player competes in and their draft performance clearly exists. However, when inspecting the relationships between a player's performance metrics and the position in which they were drafted it becomes clear that there is certain level of nuance that hides the relationship from the plot. Take a player's points per game average compared with their draft position. Below in Figure \ref{fig:ptsPick}, no clear relationship can be identified resulting in us needing to make use of statistical techniques to unveil them.
+
+\newpage
+
+```{r ptsPick, fig.cap="\\label{fig:ptsPick} Draft pick versus points per game in final year of college career", fig.height=5, fig.width=6, echo=FALSE, fig.align='center'}
+
+plot(draftData$pts, draftData$pick, col = "dodgerblue", las = 1,pch = 1,
+     xlab = "Pts Per Game",
+     ylab = "Pick Drafted",
+     cex.lab = 1.5, cex.axis = 1.25)
+```
+
+The nuance behind a player's draft position and their performance metrics is precisely the reason why we chose to investigate it. In our initial attempt to answer our regression question we chose to use a linear regression model including all the variables mentioned in Table \ref{tbl:Variables Used in Analysis}. We elected to use this approach as it was widely covered in our course this semester, and offers a fair amount of insight into how each variable impacts the response variable. Below is the model equation we elected to use:
+
+\begin{eqnarray*}
+ \hat{pick} = \beta_0 + \beta_1I_{B10}(conf) + \beta_2I_{B12}(conf) + \\
+\beta_3I_{BE}(conf) + \beta_4I_{MWC}(conf) + \beta_5I_{P12}(conf)+ \\
+\beta_6I_{SEC}(conf)\beta_{12}I_{JR}(yr)+ \beta_{13}I_{So}(Yr)+ \\
+\beta_{14}I_{SR}(yr)+ \beta_{15}ftr +\beta_{16}GP+\beta_{17}eFG+ \\
+\beta_{18}TPper+\beta_{19}blkper+ \beta_{20}stlper+\beta_{21}pfr+\\
+\beta_{22}ast.tov+\beta_{23}drtg+ \beta_{24}oreb+\beta_{25}dreb+\\
+\beta_{26}ast+\beta_{27}stl+ \beta_{28}blk +\beta_{29}pts
+\end{eqnarray*}
+
+For our second technique, we chose to used a cross-validated ridge regression model in order to identify the most meaningful variables within our data. We inputted the exact same coefficients as the ones used for the linear model. This process allowed us to highlight which aspects of a player's performance metrics had the greatest impact on his draft performance.
+
+## Classification 
+```{r, include = FALSE}
+
+newDrafted = drafted[drafted$year %in% c(2009,2010,2011,2012),]
+
+confCounts <- newDrafted %>%
+  group_by(conf) %>%
+  summarise(n = n())
+atLeast20 <- subset(confCounts, n > 10, select = c("conf"))
+
+newDrafted = semi_join(newDrafted, atLeast20, by ="conf")
+
+
+playerSalaries = read.csv("E:/mat374/project/data/Salary1990-2017.csv", header = TRUE)
+playerSalaries = playerSalaries[playerSalaries$Season.Start %in% c(2010,2011,2012,2013,2014,2015,2016,2017),]
+playerSalaries$Player.Name = tolower(playerSalaries$Player.Name)
+
+names(playerSalaries)[2] <- "player_name"
+sumstats <- playerSalaries %>%
+  group_by(player_name) %>%
+  summarise(n = n())
+atLeast5 <- subset(sumstats, n > 4, select = c("player_name"))
+atLeast5$scndContract <- 1
+
+
+bustData <- merge(newDrafted, atLeast5, all = TRUE)
+bustData  <- subset(bustData, !is.na(team))
+bustData$scndContract[is.na(bustData$scndContract)] = 0
+
+bustCounts <- bustData %>%
+  group_by(scndContract) %>%
+  summarise(numBusts = n(), .groups = 'drop')  
+```
+
+The first of our classification techniques used is a basic logistic regression model. We use the exact same variables listed in Table \ref{tbl:Variables Used in Analysis} with the one exception being that we include a variable called $scndContract$. This variable is either a 0 (did not receive a second contract) or a 1 (did receive a second contract) for collegiate basketball players that were drafted in the 2009 - 2012 seasons. Additionally, we are now only including players from conferences who had more than 10 players drafted due to our smaller sample size. For our logistic regression model, we did not use any cross-validation and included all variables in our model. 
+
+For similar reasons why we elected to use a linear regression model, we chose a logistic regression model due to our familiarity with it. We had covered it in our course and it proved to be a handy model that is simple to use and interpret. 
+
+The amount of player's that received a second contract compared to the amount who didn't is fairly close. In Figure \ref{fig:bustPlot}, it can be seen that it is essentially an even split amongst the players who were drafted in our range of seasons.\newpage
+
+```{r bustPlot, fig.cap="\\label{fig:bustPlot} Number of players who received or did not receive their second contract (2009 - 2012)", fig.height=5, fig.width=6, echo=FALSE, fig.align='center'}
+bp <- barplot(bustCounts$numBusts, 
+              xlab = "Second Contract?", 
+              ylab ="Frequency",
+              col = c("lightblue", "salmon"), 
+              names.arg = c("No", "Yes"),
+              ylim = c(0, max(bustCounts) + 25),
+              space = 0.25)
+```
+
+Once again, we suspected that the conference in which a player competes in is a major factor in how long their career lasts. Typically, if a player comes out of an elite conference they are exposed to the professional lifestyle and regiment fairly early on. The "student" in student-athlete is far from the top priority for many of these players who have professional aspirations. They dive into a professional regiment early on and therefore are better equipped to last in the NBA. Below in Figure \ref{fig:BustsPerConf}, we highlight the percentage of players drafted who did not receive their second contract per conference. Interestingly, the Pacific-10 conference has differentiated itself as a pro-producing conference alongside the ACC.\newpage
+
+```{r BustsPerConf, fig.cap="\\label{fig:BustsPerConf} Number of players who did not receive their second contract per conference (2009 - 2012)", fig.height=4, fig.width=6, echo=FALSE}
+
+bustPerConference <- bustData %>%
+  filter(scndContract == 0) %>%           
+  group_by(conf) %>%
+  summarise(numBust = n(), .groups = 'drop')
+
+playersPerConference <- bustData %>%
+  group_by(conf) %>%
+  summarise(numPlayers = n(), .groups = 'drop')  
+
+
+percBustPerConf = 100 * bustPerConference$numBust/playersPerConference$numPlayers
+  
+barplot(percBustPerConf,
+        names.arg = bustPerConference$conf,
+        las = 1, # Orientation of axis labels: 2 for perpendicular to the axis
+        cex.names = 0.7, # Adjust text size as needed
+        xlab = "Conference",
+        ylab = "Percentage of Busts Per Conference",
+        col = "dodgerblue",
+        ylim = c(0, 100)
+        )
+
+```
+
+Another telling sign of a how well a college player translates into the professional game is how good of a scorer they are in college. Below in Figure \ref{fig:ptsBust}, we highlight the spread of points per game for the category of players who receive and don't receive their second contract. It can be seen that a player who receives his second contract averages more points per game in college than his peer who doesn't. \newpage
+
+```{r ptsBust, fig.cap="\\label{fig:ptsBust} Boxplot of players points per game versus whether they receive a second contract or not (2009 - 2012)", fig.height=4, fig.width=6, echo=FALSE}
+
+
+boxplot(pts ~ scndContract, data = bustData,
+        horizontal = TRUE,
+        xlab = "Points Per Game", ylab = "Second Contract?",
+        col = c("lightblue", "salmon"),
+        names = c("No", "Yes"))
+
+```
+
+Our second technique used was trees and random forests. This approach allowed us to present an easily interpretable model based off of our data-set. The draw backs of using a tree was that it was non-robust and does not have the same level of predictive accuracy as the other models.
+
+
+# Results
+
+## Regression 
+
+```{r, echo = FALSE}
+set.seed(34124)
+train  = sample(1:nrow(draftData), nrow(draftData)*.75)
+test = (1:nrow(draftData))[!1:nrow(draftData) %in% train]
+
+lin.mod = lm(pick~ ., data = draftData[train,])
+
+lin.pred <- ceiling(predict(lin.mod, draftData[test, ]))
+MSE = mean((lin.pred - draftData$pick[test])^2)
+
+summar = summary(lin.mod)
+
+#round(summar$coefficients[,1],2)
+```
+
+The estimated final model for our linear model was:
+
+\begin{eqnarray*}
+ \hat{pick} = 41.33 + 4.90I_{B10}(conf) + 1.41I_{B12}(conf) + \\
+0.27I_{BE}(conf) + 5.27I_{MWC}(conf) + 1.61I_{P12}(conf) + \\
+0.99I_{SEC}(conf) + 17.68I_{JR}(yr)+ 11.24I_{So}(Yr)+ \\
+25.80I_{SR}(yr)- 0.06ftr - 0.36GP -0.73eFG  \\
+-2.48TPper + 2.24blkper -2.71stlper + 0.35pfr+\\
+2.96ast.tov+0.50drtg+ -0.76oreb+ 0.71dreb+\\
+-1.80ast+ 0.47stl+ -9.29blk + -1.07pts
+\end{eqnarray*}
+
+Our model did not perform well scoring a mean squared error of 177.66. Essentially, on average, we were off by 13 picks for our predictions. This could be for a variety of reasons, but our analysis determined a few key components that factored into producing a flawed model. First and foremost, we included 24 variables in our linear model which may have resulted in us overfitting to our data. Additionally, when reviewing the summary of our linear model only 10 variables would have been able to pass a p-test suggesting that only a handful of variables really matter. A few examples in particular that caught our attention were $yr$ (academic year drafted in), $blk$ (blocks per game), and $drtg$ (defensive rating). The $yr$ variable stood out as the single most important variable in our model as it indicated that the younger that you get drafted the better you will perform in the draft. Being a freshman in the ACC, you would, on average, be drafted 13 picks higher than a sophomore. You would be drafted 18 picks higher than a junior and a startling 27 picks higher than a senior. This made sense as, more often than not, a young freshman that is drafted is typically a highly touted prospect that treats collegiate basketball solely as a buffer year until they go pro. 
+
+The variables $blk$ and $drtg$ also proved to be insightful variables as they shed light on what is sought after in the NBA Draft. For context, $drtg$ is calculated by estimating how many points a player would allow per 100 possessions when they're on the court, and a lower rating is better. Both $drtg$ and $blk$ had p-values < 0.05 and based off of the model we believe that this suggests a player's defensive prowess is highly sought after amongst NBA scouts. Consider that if a player averages 2 blocks per game they are, on average, going to be drafted a full 18 picks higher than their peer who averages none. Now, this is more than likely our data-set that inflated this value, and we suspect that if we took many more years of college basketball into consideration, blocks per game would have less of an impact on draft performance.
+
+```{r, include = FALSE}
+set.seed(112412)
+
+x = model.matrix(pick ~ ., draftData)
+y = draftData$pick
+train  = sample(1:nrow(x), nrow(x)*.75)
+test = (1:nrow(x))[!1:nrow(x) %in% train]
+y.test = y[test]
+
+grid = 10^seq(10,-2,length = 100)
+ridge.mod <- glmnet(x[train, ], y[train], alpha = 0, lambda = grid, thresh = 1e-12)
+cv.out = cv.glmnet(x[train,], y[train], alpha = 0)
+bestLambda = cv.out$lambda.min
+ridge.pred <- predict(ridge.mod, s = bestLambda, newx= x[test, ])
+MSE = mean((ridge.pred - y.test)^2)
+
+round(predict(ridge.mod, type ="coefficients", s = bestLambda)[,1],2)
+```
+
+In our second model we chose to use a cross-validation approach to pick our best ridge regression model for our data. Figure \ref{fig:lambda}, shows the various $\lambda$ values and their respective MSE. In our case, the best $\lambda$ value we found was 0.998.
+```{r lambdaRidge, fig.cap="\\label{fig:lambda} Cross-Validation insight onto log(lambda) versus Mean-Squared Error", fig.height=5, fig.width=6, echo=FALSE, fig.align='center'}
+
+plot(cv.out, main = "")
+```
+
+Below is our estimated model using the cross-validated ridge regression approach:
+
+\begin{eqnarray*}
+ \hat{pick} = 72.12 + 3.84I_{B10}(conf) + 0.63I_{B12}(conf) - \\
+0.20I_{BE}(conf) + 4.00I_{MWC}(conf) + 2.29I_{P12}(conf) - \\
+1.46I_{SEC}(conf) + 14.39I_{JR}(yr)+ 7.47I_{So}(Yr)+ \\
+20.51I_{SR}(yr)- 0.03ftr - 0.27GP -0.58eFG - \\
+4.49TPper + 0.33blkper -1.37stlper - 0.20pfr+\\
+1.38ast.tov+0.14drtg+ 0.15oreb - 1.16dreb+\\
+-0.45ast - 2.45stl - 1.86blk -0.92pts
+\end{eqnarray*}
+
+
+This model tells a very similar story as our previous one despite performing worse with an MSE of 222.31. It places significant importance on $yr$ which is what we had anticipated. Interestingly, $TP\_Per$ (Three Point Percentage) is far more important in this model than the previous one. 
+
+Overall, we came to the conclusion that the academic year in which you declare for the draft is the most significant of factors when predicting draft performance. This is not to say that we believe if you are a freshman you are automatically more likely to get drafted, but we believe that if you are a freshman producing a performance output on the same level as older players you are far more likely to get drafted ahead of them. Another conclusion we reached was that when inspecting a data-set of solely drafted players, the performance metrics of each player will look fairly similar. This results in the models not putting much importance on statistics that we believed would play a pivotal role. Perhaps if we had included all players from college basketball certain performance metrics would have separated themselves as the tell-tale signs of an elite draft prospect. 
+
+## Classification
+```{r, include = FALSE}
+set.seed(412412)
+classData = bustData[,c(3,26, 68, 4,8,22:25,31,36, 46:47, 58,59, 61:64)]
+
+names(classData)
+train  = sample(1:nrow(classData), ceiling(nrow(classData)*0.8))
+test = setdiff(1:nrow(classData), train)
+
+trData <- classData[train, ]
+testData <- classData[test, ]
+
+logReg.mod = glm(scndContract ~ ., data = trData, 
+                 family = "binomial")
+logReg.probs = predict(logReg.mod, type = "response", newdata= testData)
+
+logReg.pred = rep(1,length(classData$scndContract[test]))
+
+logReg.pred[logReg.probs < 0.5 ] = 0
+
+summary(logReg.mod)
+#round(coef(logReg.mod),2)
+```
+Below is our estimated logistic regression model:
+
+\begin{eqnarray*}
+ ln(\frac{p_{scndContract}}{1-p_{scndContract}}) = \\
+ -9.58 -2.05I_{B10}(conf) -1.06I_{B12}(conf) - 1.65I_{CUSA}(conf) + \\
+ 0.46I_{P10}(conf) - 1.20I_{SEC}(conf) - 1.39I_{JR}(yr)- \\
+ 1.76I_{So}(Yr) - 0.01ftr +1.21I_{SR}(yr)- 0.03ftr + \\
+ 0.10GP + 0.01eFG + 1.01TPper + 0.08blkper + \\
+ 1.41stlper - 1.41pfr+ 1.33ast.tov- 0.04pick + \\
+ 0.03drtg+0.83 oreb - 0.03dreb- 0.14ast - \\
+ 1.85stl - 0.05blk + 0.15pts\\
+\end{eqnarray*}
+
+Our model performed better than we had anticipated. Our confusion matrix indicated that we had achieved a test error rate of roughly 35%. For context, the probability prediction produced by the model was set to either 0 or 1 depending on if it was greater than or equal to 0.5. Our confusion matrix can be seen below in Table \ref{tbl:confMatrix1}.
+
+
+```{r confMatrix1,echo=FALSE}
+
+confusionMatrix <- table(Predicted = logReg.pred, Actual = classData$scndContract[test])
+
+kable(confusionMatrix, format = "markdown",
+      caption = "\\label{tbl:confMatrix1}Confusion Matrix of Logistic Regression Model")
+
+```
+The coefficients in our model did not surprise us as many of our predictions on which would have the most impact came to light. Variables such as $yr$ and $conf$ had a tremendous impact on your chances of reaching a second contract. As we previously noted, the conference in which you play could have a massive developmental impact therefore impacting your career longevity. Additionally, as we saw in our regression analysis, the younger draft prospects seemed to fair better than their older peers. This could be attributed to the fact that a younger draft prospect has more upside to them resulting in teams betting on their long term development.
+
+```{r, include = FALSE}
+set.seed(151466)
+train  = sample(1:nrow(classData), ceiling(nrow(classData)*0.8))
+test = setdiff(1:nrow(classData), train)
+
+trData <- classData[train, ]
+testData <- classData[test, ]
+
+#makes tree
+tree.contract <- tree(scndContract ~ ., testData, subset =train)
+summary(tree.contract)
+plot(tree.contract)
+text(tree.contract,cex = 0.5)
+
+# This is a simple tree that is fit with all variables present in the prediction.
+
+bag.contract <- randomForest(scndContract ~ ., data = trData)
+plot(bag.contract)
+
+# Then we made a random forest that was made using the same model 
+
+which.min(bag.contract$mse) #num of trees produce lowest test MSE
+
+#find RMSE of best model
+sqrt(bag.contract$mse[which.min(bag.contract$mse)])
+
+import.Plot <- varImpPlot(bag.contract) #produce variable importance plot
+
+tree.contract2 <- tree(scndContract ~ ftr + eFG + dreb + oreb + pick, trData)
+
+```
+
+Our second model, using trees and random forests proved to be a difficult undertaking. We first used a random forest model that highlighted the relevant variables to make predictions. According to the Figure \ref{fig:imPlot}, there's a considerable drop off after the first six, so we fit a new tree using only those six. 
+
+```{r imPlot, fig.cap="\\label{fig:imPlot} Importance Plot", fig.height=6, fig.width=6, echo=FALSE, fig.align='center'}
+plot(bag.contract$importance, pch = 19, las =1 , col = "dodgerblue" ,main ="", ylab = "Importance level")
+
+```
+
+\newpage
+
+The tree we fit can be seen in Figure \ref{fig:Tree}
+```{r Tree, fig.cap="\\label{fig:Tree} Final Tree", fig.height=6, fig.width=6, echo=FALSE, fig.align='center'}
+plot(tree.contract2)
+text(tree.contract2, cex = 0.5)
+```
+
+
+
+
+```{r confMatrix2, echo=FALSE}
+predictions2 <- predict(tree.contract2, newdata = testData)
+predictions2[predictions2 < 0.5 ] = 0
+predictions2[predictions2 > 0.5 ] = 1
+confusionMatrix2 <- table(Predicted = predictions2, Actual = classData$scndContract[test])
+
+kable(confusionMatrix2, format = "markdown",
+      caption = "\\label{tbl:confMatrix2} Confusion Matrix of Tree Model")
+
+```
+
+According to Table \ref{tbl:confMatrix2} our test error rate was roughly 32%. This was marginally better than our previous model despite being a far more interpretable model. Moreover, it was interesting to note which variables our random forests process selected to be the relevant predictors. This was an aspect that differed from all other models fitted in our report.
+
+# Conclusions
+
+Our analysis on college basketball proved to be a difficult task that demanded well-fitted models to handle our data. Unfortunately, our regression models proved to be less than useful as they could not handle the amount of variables present. The insight gained on each variable was by far the most useful portion of our regression analysis. As we noted in our report, a more interesting approach we could have taken was to analyze all collegiate basketball players. This would have made the 670 players who were drafted look far more special than how they appear to be when all piled into one data-set. Additionally, this analysis might have shed more light onto the performance metrics that seemingly appeared to be a non-factor in our analysis on draft performance.
+
+However, our classification analysis on career longevity proved to be useful. A test error rate of 35% and 32%, while being trained on an incredibly small data-set was a metric we were proud to achieve. We believe that if we had included a larger data-set we could have achieved even better. Moreover, it would have been fascinating to perform an analysis that included a player's NBA statistics in his first few years. Finding a balance to be able to weigh collegiate and NBA statistics appropriately would have proved to have been a fun challenge.
+
+Our report highlights the nuance of player scouting and the difficulty of capturing a player's ability solely by statistical analysis. Some believe in the "eye test" and others believe in data. We believe that if a balance is struck then calculated decisions can be made to highlight players that will have a lasting impact in the NBA. As time passes the data-set at our disposal only grows larger and it presents an incredible opportunity to be able to digest and present this data in a manner that is useful to others. 
